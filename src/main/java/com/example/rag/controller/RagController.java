@@ -546,7 +546,51 @@ public class RagController {
         }
         // 只保留汉字、字母、数字，其余（标点、布尔运算符）一律去掉
         s = s.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "").trim();
+        // 「第520条」→「第五百二十条」：文档里是中文数字，用户习惯打阿拉伯数字
+        s = ARTICLE_REF.matcher(s)
+                .replaceAll(m -> "第" + toChineseNumber(Integer.parseInt(m.group(1))) + "条");
         return s.length() > 24 ? s.substring(0, 24) : s;
+    }
+
+    /**
+     * 匹配「第123条」这样的条文引用。
+     */
+    private static final java.util.regex.Pattern ARTICLE_REF =
+            java.util.regex.Pattern.compile("第(\\d{1,4})条");
+
+    private static final String[] DIGITS = {"零", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
+
+    /**
+     * 阿拉伯数字转中文数字（1~9999），只为了拼条文号。
+     */
+    private String toChineseNumber(int n) {
+        if (n <= 0) {
+            return "零";
+        }
+        int[] units = {1000, 100, 10, 1};
+        String[] names = {"千", "百", "十", ""};
+        StringBuilder sb = new StringBuilder();
+        boolean started = false;
+        boolean zeroPending = false;
+
+        for (int i = 0; i < units.length; i++) {
+            int digit = n / units[i] % 10;
+            if (digit == 0) {
+                if (started) {
+                    zeroPending = true;
+                }
+                continue;
+            }
+            if (zeroPending) {
+                sb.append('零');
+                zeroPending = false;
+            }
+            sb.append(DIGITS[digit]).append(names[i]);
+            started = true;
+        }
+        String result = sb.toString();
+        // 10~19 写成「十X」而不是「一十X」
+        return result.startsWith("一十") ? result.substring(1) : result;
     }
 
     /**
