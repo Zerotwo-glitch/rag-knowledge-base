@@ -1,0 +1,47 @@
+# ===== 构建产物 =====
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# ===== 本地配置与密钥（切勿提交）=====
+.env
+.env.local
+*.local.yml
+*.local.yaml
+*.local.properties
+application-local.yml
+application-local.properties
+
+# ===== IDE =====
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### Eclipse / STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### VS Code ###
+.vscode/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+
+# ===== 系统与日志 =====
+logs/
+*.log
+.DS_Store
+Thumbs.db

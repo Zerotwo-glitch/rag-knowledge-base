@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>企业知识库 RAG 问答</title>
+    <style>
+        :root {
+            --bg: #f5f6f8;
+            --panel: #ffffff;
+            --border: #e3e6eb;
+            --text: #1f2329;
+            --muted: #8a9099;
+            --accent: #2f6fed;
+            --accent-soft: #eaf1ff;
+            --bubble: #f0f2f5;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        /* ---------- 左侧 ---------- */
+        aside {
+            width: 340px;
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px 18px;
+            gap: 14px;
+            overflow-y: auto;
+        }
+
+        h1 {
+            font-size: 17px;
+            margin: 0;
+            letter-spacing: .5px;
+        }
+
+        .sub {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: -8px;
+            line-height: 1.5;
+        }
+
+        .field { display: flex; flex-direction: column; gap: 6px; }
+
+        label { font-size: 12px; color: var(--muted); }
+
+        input[type=text] {
+            width: 100%;
+            padding: 9px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            outline: none;
+            transition: border-color .15s;
+        }
+
+        input[type=text]:focus { border-color: var(--accent); }
+
+        button {
+            border: none;
+            border-radius: 6px;
+            padding: 9px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            background: var(--accent);
+            color: #fff;
+            transition: opacity .15s;
+        }
+
+        button:hover { opacity: .88; }
+        button:disabled { opacity: .45; cursor: not-allowed; }
+
+        button.ghost {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid var(--border);
+        }
+
+        .row { display: flex; gap: 8px; }
+        .row > input { flex: 1; }
+
+        .kb-list { display: flex; flex-direction: column; gap: 6px; }
+
+        .kb-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 9px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .kb-item:hover { background: #fafbfc; }
+
+        .kb-item.active {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+
+        .kb-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .kb-del {
+            color: var(--muted);
+            font-size: 12px;
+            padding: 0 4px;
+            cursor: pointer;
+            background: none;
+        }
+
+        .kb-del:hover { color: #d93026; opacity: 1; }
+
+        .empty { color: var(--muted); font-size: 12px; padding: 4px 2px; }
+
+        .hint {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.6;
+            border-top: 1px dashed var(--border);
+            padding-top: 12px;
+        }
+
+        /* ---------- 右侧 ---------- */
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        header {
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header .title { font-weight: 600; }
+        header .status { font-size: 12px; color: var(--muted); }
+
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .msg { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
+
+        .msg.user { align-self: flex-end; align-items: flex-end; }
+
+        .bubble {
+            padding: 12px 14px;
+            border-radius: 10px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .msg.user .bubble { background: var(--accent); color: #fff; }
+        .msg.bot .bubble { background: var(--panel); border: 1px solid var(--border); }
+
+        .meta {
+            font-size: 11px;
+            color: var(--muted);
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .meta .tag {
+            background: #eef1f5;
+            border-radius: 4px;
+            padding: 1px 6px;
+        }
+
+        details {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 12px;
+            color: #555;
+        }
+
+        details summary {
+            cursor: pointer;
+            color: var(--accent);
+            outline: none;
+        }
+
+        details .src { margin-top: 8px; line-height: 1.6; }
+        details .src b { color: var(--muted); font-weight: 500; }
+
+        footer {
+            padding: 14px 24px 20px;
+            background: var(--panel);
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+        }
+
+        footer textarea {
+            flex: 1;
+            resize: none;
+            height: 46px;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+        }
+
+        footer textarea:focus { border-color: var(--accent); }
+
+        .dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #34c759;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+
+<aside>
+    <h1>企业知识库 RAG 问答</h1>
+    <div class="sub">上传 PDF 建立知识库，回答只依据资料内容</div>
+
+    <div class="field">
+        <label>用户 ID</label>
+        <input type="text" id="userId" value="demo">
+    </div>
+
+    <div class="field">
+        <label>我的知识库</label>
+        <div class="kb-list" id="kbList"></div>
+    </div>
+
+    <div class="row">
+        <input type="text" id="kbName" placeholder="新知识库名称">
+        <button onclick="createKb()">新建</button>
+    </div>
+
+    <div class="field">
+        <label>上传 PDF 到当前知识库</label>
+        <input type="file" id="pdfFile" accept="application/pdf" style="display:none">
+        <button class="ghost" onclick="document.getElementById('pdfFile').click()">选择 PDF 文件</button>
+    </div>
+
+    <div class="hint">
+        检索采用<b>父子分块 + 多路召回</b>：<br>
+        子块 500 token 走向量召回，父块 2000 token 走全文关键词召回，两路结果用 RRF 融合后交给模型。
+    </div>
+</aside>
+
+<main>
+    <header>
+        <div class="title" id="kbTitle">未选择知识库</div>
+        <div class="status"><span class="dot"></span>本地 Ollama · 无外部 API</div>
+    </header>
+
+    <div id="chat"></div>
+
+    <footer>
+        <textarea id="question" placeholder="针对知识库提问，例如：这个文档里规定的报销流程是什么？"></textarea>
+        <button id="sendBtn" onclick="ask()">发送</button>
+    </footer>
+</main>
+
+<script>
+    const $ = id => document.getElementById(id);
+    let currentKbId = null;
+    let currentKbName = '';
+
+    $('userId').addEventListener('change', () => {
+        currentKbId = null;
+        loadKbList();
+    });
+
+    $('pdfFile').addEventListener('change', async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (!currentKbId) { alert('请先选择或新建一个知识库'); e.target.value = ''; return; }
+
+        addBot('正在解析并写入《' + file.name + '》...');
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('userId', $('userId').value.trim());
+        fd.append('kbId', currentKbId);
+
+        try {
+            const res = await fetch('/rag/upload-pdf', { method: 'POST', body: fd });
+            const text = await res.text();
+            if (!res.ok) throw new Error(text || ('HTTP ' + res.status));
+            addBot('上传完成：' + text);
+        } catch (err) {
+            addBot('上传失败：' + err.message);
+        }
+        e.target.value = '';
+    });
+
+    async function loadKbList() {
+        const userId = $('userId').value.trim() || 'demo';
+        const box = $('kbList');
+        box.innerHTML = '<div class="empty">加载中...</div>';
+        try {
+            const res = await fetch('/kb/list?userId=' + encodeURIComponent(userId));
+            const list = await res.json();
+            if (!list.length) {
+                box.innerHTML = '<div class="empty">还没有知识库，先建一个</div>';
+                return;
+            }
+            box.innerHTML = '';
+            list.forEach(kb => {
+                const item = document.createElement('div');
+                item.className = 'kb-item' + (kb.id === currentKbId ? ' active' : '');
+                item.innerHTML = '<span class="kb-name"></span><button class="kb-del" title="删除">删除</button>';
+                item.querySelector('.kb-name').textContent = kb.name;
+                item.querySelector('.kb-name').addEventListener('click', () => selectKb(kb.id, kb.name));
+                item.querySelector('.kb-del').addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    deleteKb(kb.id);
+                });
+                box.appendChild(item);
+            });
+        } catch (err) {
+            box.innerHTML = '<div class="empty">加载失败：' + err.message + '</div>';
+        }
+    }
+
+    function selectKb(id, name) {
+        currentKbId = id;
+        currentKbName = name;
+        $('kbTitle').textContent = '知识库：' + name;
+        loadKbList();
+    }
+
+    async function createKb() {
+        const name = $('kbName').value.trim();
+        if (!name) { alert('请输入知识库名称'); return; }
+        const userId = $('userId').value.trim() || 'demo';
+        try {
+            const res = await fetch('/kb/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ userId, name })
+            });
+            const kbId = (await res.text()).trim();
+            $('kbName').value = '';
+            selectKb(kbId, name);
+            addBot('知识库《' + name + '》创建成功，现在可以上传 PDF 了。');
+        } catch (err) {
+            alert('创建失败：' + err.message);
+        }
+    }
+
+    async function deleteKb(id) {
+        if (!confirm('删除后该知识库的文档和向量会一并清除，确定？')) return;
+        const userId = $('userId').value.trim() || 'demo';
+        await fetch('/kb/delete?kbId=' + encodeURIComponent(id) + '&userId=' + encodeURIComponent(userId), { method: 'DELETE' });
+        if (id === currentKbId) {
+            currentKbId = null;
+            $('kbTitle').textContent = '未选择知识库';
+        }
+        loadKbList();
+    }
+
+    async function ask() {
+        const question = $('question').value.trim();
+        if (!question) return;
+        if (!currentKbId) { alert('请先选择知识库'); return; }
+
+        addUser(question);
+        $('question').value = '';
+        const btn = $('sendBtn');
+        btn.disabled = true;
+        const loading = addBot('检索中...');
+
+        try {
+            const params = new URLSearchParams({
+                question,
+                userId: $('userId').value.trim() || 'demo',
+                kbId: currentKbId
+            });
+            const res = await fetch('/rag/ask?' + params.toString(), { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+
+            loading.remove();
+            addBot(data.answer || '(空回答)', data);
+        } catch (err) {
+            loading.remove();
+            addBot('请求失败：' + err.message);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function addUser(text) {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg user';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.textContent = text;
+        wrap.appendChild(bubble);
+        $('chat').appendChild(wrap);
+        $('chat').scrollTop = $('chat').scrollHeight;
+    }
+
+    function addBot(text, data) {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg bot';
+
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.textContent = text;
+        wrap.appendChild(bubble);
+
+        if (data && data.recall) {
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            meta.innerHTML = '<span class="tag">向量召回 ' + data.recall.vector + ' 条</span>' +
+                             '<span class="tag">关键词召回 ' + data.recall.keyword + ' 条</span>' +
+                             '<span class="tag">融合后使用 ' + (data.sources || []).length + ' 个父块</span>';
+            wrap.appendChild(meta);
+        }
+
+        if (data && data.sources && data.sources.length) {
+            const details = document.createElement('details');
+            details.innerHTML = '<summary>查看引用片段（' + data.sources.length + '）</summary>';
+            data.sources.forEach((s, i) => {
+                const div = document.createElement('div');
+                div.className = 'src';
+                div.innerHTML = '<b>#' + (i + 1) + ' ' + escapeHtml(s.file || '') + '</b><br>';
+                div.appendChild(document.createTextNode(s.preview || ''));
+                details.appendChild(div);
+            });
+            wrap.appendChild(details);
+        }
+
+        $('chat').appendChild(wrap);
+        $('chat').scrollTop = $('chat').scrollHeight;
+        return wrap;
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    $('question').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+    });
+
+    loadKbList();
+</script>
+</body>
+</html>

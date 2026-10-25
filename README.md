@@ -1,0 +1,211 @@
+# 企业知识库 RAG 问答系统
+
+<p>
+  <img alt="Java" src="https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white">
+  <img alt="Spring Boot" src="https://img.shields.io/badge/Spring%20Boot-4.1-6DB33F?logo=springboot&logoColor=white">
+  <img alt="Spring AI" src="https://img.shields.io/badge/Spring%20AI-2.1-6DB33F">
+  <img alt="Redis" src="https://img.shields.io/badge/Redis-Vector%20Search-DC382D?logo=redis&logoColor=white">
+  <img alt="MySQL" src="https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white">
+</p>
+
+上传 PDF 建立私有知识库，提问时**先检索、后生成**，回答严格限制在资料范围内。
+
+检索不是简单的「拿问题去向量库捞 topK」，而是**父子分块 + 向量/关键词多路召回 + RRF 融合**——这是它和「调个 API 套个 RAG」的区别。
+
+<!-- 截图位：跑起来后截一张图放进 docs/，再把下面这行取消注释 -->
+<!-- ![界面截图](docs/screenshot.png) -->
+
+---
+
+## 为什么这么做
+
+单路向量检索有两个绕不过去的弱点：
+
+1. **召回粒度两难**：块切大了，噪声多、相似度被稀释；块切小了，召回准但上下文碎，模型答不全。
+2. **精确词失效**：向量擅长语义相近，但「错误码 4021」「`RagController`」这类专有名词、编号、类名，向量经常召不回来。
+
+这个项目对应地做了两件事：**父子分块**解决粒度问题，**多路召回**解决精确匹配问题。
+
+## 核心设计
+
+### 1. 父子分块（small-to-big）
+
+| 层级 | 大小 | 存储 | 作用 |
+| --- | --- | --- | --- |
+| 子块 | 500 token | Redis 向量库 | 只负责**召回**，越小越准 |
+| 父块 | 2000 token | MySQL | 负责**作答**，越大上下文越完整 |
+
+子块命中后，按 `parent_id` 回 MySQL 取父块，再喂给模型。用小块找、用大块答。
+
+### 2. 多路召回
+
+```mermaid
+flowchart LR
+    Q[用户问题] --> V[向量召回<br/>子块 topK=8]
+    Q --> K[关键词召回<br/>父块全文索引 topK=8]
+    V -->|parent_id 去重| VR[父块排名 A]
+    K --> KR[父块排名 B]
+    VR --> R[RRF 融合]
+    KR --> R
+    R -->|top 4 父块| C[拼接上下文 ≤6000 字符]
+    C --> M[Ollama qwen2.5:14b]
+    M --> A[回答 + 引用片段]
+```
+
+- **向量路**：`VectorStore.similaritySearch`，阈值 0.6，命中子块后按 `parent_id` 去重。
+- **关键词路**：MySQL `FULLTEXT ... WITH PARSER ngram`，中文靠 ngram 切 2-gram，不需要额外的分词服务。
+- **融合**：RRF（Reciprocal Rank Fusion），`score = Σ 1 / (60 + rank)`。
+
+### 3. 为什么用 RRF 而不是加权分数
+
+向量路给的是余弦相似度（0~1），关键词路给的是 MySQL 的相关度分数（量纲完全不同，还随文档长度浮动）。**两个分数不能直接相加**，归一化也会因为分布漂移而不稳。
+
+但「名次」是可比的：第一名就是第一名。RRF 只用名次，天然免疫量纲问题，这也是工业界混合检索的默认做法。
+
+## 功能
+
+- PDF 上传 → 解析 → 文本归一化 → 父子两级切分 → 入库
+- 手动录入文本（不传文件也能建库）
+- 多知识库隔离：检索时按 `user_id` + `kb_id` 过滤
+- 单页对话前端：建库、传文件、提问、查看引用片段
+- 同路失败自动降级：关键词索引没建好时，退回纯向量召回，不影响可用性
+
+## 技术栈
+
+| 层次 | 选型 |
+| --- | --- |
+| 语言 / 框架 | Java 21、Spring Boot 4.1 |
+| AI | Spring AI 2.1、Ollama（qwen2.5:14b + qwen3-embedding:0.6b） |
+| 向量库 | Redis Stack（RediSearch），`RedisVectorStore` |
+| 关系库 | MySQL 8（父块 + 全文索引） |
+| 持久层 | MyBatis-Plus 3.5 |
+| 前端 | 原生 HTML + JS（无构建） |
+
+## 快速开始
+
+### 1. 环境要求
+
+- JDK 21+
+- MySQL 8
+- Redis Stack（**必须带 RediSearch 模块**，普通 Redis 不支持向量检索）
+- [Ollama](https://ollama.com/)
+
+### 2. 拉模型
+
+```bash
+ollama pull qwen2.5:14b
+ollama pull qwen3-embedding:0.6b
+ollama serve
+```
+
+### 3. 起数据库
+
+```bash
+docker compose up -d
+```
+
+MySQL 首次启动会自动执行 `docs/schema.sql`。
+
+手动方式：
+
+```bash
+mysql -uroot -p < docs/schema.sql
+```
+
+### 4. 配置
+
+```bash
+cp .env.example .env
+```
+
+Windows：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+项目启动时自动读取根目录 `.env`（见 `application.yml` 的 `spring.config.import`）。
+
+### 5. 启动
+
+```bash
+# Linux / macOS
+./mvnw spring-boot:run
+
+# Windows
+mvnw.cmd spring-boot:run
+```
+
+浏览器打开 <http://localhost:8080>。
+
+## 配置项
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SERVER_PORT` | `8080` | 服务端口 |
+| `DB_URL` | `jdbc:mysql://localhost:3306/rag_kb_db?...` | JDBC 连接串 |
+| `DB_USERNAME` / `DB_PASSWORD` | `root` / 空 | 数据库账号 |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Redis 地址 |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 地址 |
+| `OLLAMA_CHAT_MODEL` | `qwen2.5:14b` | 对话模型 |
+| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 向量模型（换模型需要重建向量库） |
+| `OLLAMA_NUM_CTX` | `8192` | 上下文窗口 |
+| `MAX_FILE_SIZE` | `20MB` | 单个 PDF 上限 |
+
+## 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/kb/create?userId=&name=` | 新建知识库，返回 kbId |
+| GET | `/kb/list?userId=` | 知识库列表 |
+| DELETE | `/kb/delete?kbId=&userId=` | 删除知识库（连同父块与向量） |
+| POST | `/rag/upload?context=&userId=&kbId=` | 手动录入文本 |
+| POST | `/rag/upload-pdf` | 上传 PDF（multipart：file / userId / kbId） |
+| POST | `/rag/ask?question=&userId=&kbId=` | 提问 |
+
+提问返回：
+
+```json
+{
+  "question": "报销流程是什么？",
+  "recall": { "vector": 5, "keyword": 3 },
+  "answer": "根据资料，报销流程是……",
+  "sources": [
+    { "parentId": "demo_xxx_0", "file": "员工手册.pdf", "preview": "……" }
+  ]
+}
+```
+
+`recall` 里两路的条数会直接显示在前端，方便观察多路召回是否生效。
+
+## 已知限制
+
+- **未做 rerank**：融合后直接取 topN，加一层交叉编码器精排效果会更好；
+- **未做 query 改写**：多轮口语化提问（「那这个呢」）召回效果一般；
+- **删除跨两个存储**：MySQL 能随事务回滚，Redis 不能，所以顺序是「先删向量、再删表」，没有分布式事务；
+- **无鉴权**：`userId` 是查询参数，仅适合本地演示；
+- **单机部署**：没有做多实例与任务队列；
+- 全文索引依赖 MySQL 的 `ngram` 分词器（5.7.6+ 内置）。
+
+## 项目结构
+
+```
+rag-knowledge-base
+├── src/main/java/com/example/rag
+│   ├── RagApplication.java
+│   ├── config          # ChatMemory / RedisVectorStore 构建
+│   ├── controller      # 知识库、检索问答、对话
+│   ├── entity          # KnowledgeBase / ParentBlock
+│   ├── mapper          # MyBatis-Plus + 关键词召回 SQL
+│   └── service         # VectorIndexService：按条件批量删向量
+├── src/main/resources
+│   ├── application.yml
+│   └── static/index.html
+├── docs/schema.sql
+├── docker-compose.yml
+└── .env.example
+```
+
+## License
+
+MIT
