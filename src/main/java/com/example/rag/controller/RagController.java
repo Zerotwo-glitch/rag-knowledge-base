@@ -83,7 +83,7 @@ public class RagController {
                          VectorIndexService vectorIndexService,
                          QueryRewriteService queryRewriteService,
                          @Value("${app.rag.vector-threshold:0.6}") double vectorThreshold,
-                         @Value("${app.rag.confident-score:0.72}") double confidentScore,
+                         @Value("${app.rag.confident-score:0.75}") double confidentScore,
                          @Value("${app.rag.rewrite-enabled:true}") boolean rewriteEnabled) {
         this.vectorStore = vectorStore;
         this.chatClient = builder.build();

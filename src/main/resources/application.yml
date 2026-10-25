@@ -61,6 +61,6 @@ app:
     # 向量召回的最低相似度，低于它的子块直接丢弃
     vector-threshold: ${RAG_VECTOR_THRESHOLD:0.6}
     # 认为"资料能回答这个问题"的最低相似度；达不到且关键词也没命中，就触发查询改写
-    confident-score: ${RAG_CONFIDENT_SCORE:0.72}
+    confident-score: ${RAG_CONFIDENT_SCORE:0.75}
     # 低置信时是否启用查询改写
     rewrite-enabled: ${RAG_REWRITE_ENABLED:true}
