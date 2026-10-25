@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多轮对话 · ChatMemory</title>
+    <style>
+        :root {
+            --bg: #f5f6f8;
+            --panel: #ffffff;
+            --border: #e3e6eb;
+            --text: #1f2329;
+            --muted: #8a9099;
+            --accent: #2f6fed;
+            --accent-soft: #eaf1ff;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        aside {
+            width: 320px;
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding: 20px 18px;
+            overflow-y: auto;
+        }
+
+        h1 { font-size: 17px; margin: 0; letter-spacing: .5px; }
+        .sub { color: var(--muted); font-size: 12px; margin-top: -8px; line-height: 1.5; }
+
+        .field { display: flex; flex-direction: column; gap: 8px; }
+        label { font-size: 12px; color: var(--muted); }
+
+        input[type=text], textarea {
+            width: 100%;
+            padding: 9px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            outline: none;
+        }
+
+        input[type=text]:focus, textarea:focus { border-color: var(--accent); }
+
+        textarea { resize: vertical; min-height: 60px; }
+
+        button {
+            border: none;
+            border-radius: 6px;
+            padding: 9px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            background: var(--accent);
+            color: #fff;
+        }
+
+        button:hover { opacity: .9; }
+        button:disabled { opacity: .45; cursor: not-allowed; }
+
+        button.ghost {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid var(--border);
+        }
+
+        .hint {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.7;
+            border-top: 1px dashed var(--border);
+            padding-top: 12px;
+        }
+
+        .nav a {
+            font-size: 12px;
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .card {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.7;
+            background: #fafbfc;
+            white-space: pre-wrap;
+        }
+
+        .card b { color: var(--muted); font-weight: 500; }
+
+        main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+        header {
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header .title { font-weight: 600; }
+        header .status { font-size: 12px; color: var(--muted); }
+
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .msg { max-width: 760px; display: flex; flex-direction: column; gap: 6px; }
+        .msg.user { align-self: flex-end; align-items: flex-end; }
+
+        .bubble {
+            padding: 12px 14px;
+            border-radius: 10px;
+            line-height: 1.75;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .msg.user .bubble { background: var(--accent); color: #fff; }
+        .msg.bot .bubble { background: var(--panel); border: 1px solid var(--border); }
+
+        .who { font-size: 11px; color: var(--muted); }
+
+        footer {
+            padding: 14px 24px 20px;
+            background: var(--panel);
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+        }
+
+        footer textarea {
+            flex: 1;
+            height: 48px;
+            min-height: 48px;
+            padding: 13px 14px;
+            font-size: 14px;
+            resize: none;
+        }
+
+        .dot {
+            display: inline-block;
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #34c759;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+
+<aside>
+    <h1>多轮对话</h1>
+    <div class="sub">ChatMemory 记忆 · 流式输出 · 结构化抽取</div>
+
+    <div class="field">
+        <label>会话 ID（服务端按它区分记忆）</label>
+        <input type="text" id="uid">
+    </div>
+    <button class="ghost" onclick="newSession()">开始新会话</button>
+
+    <div class="hint">
+        服务端用 <b>MessageWindowChatMemory</b> 保留最近 20 条消息，
+        按会话 ID 隔离。刷新页面不会清空记忆，点「开始新会话」才会换一个新的 ID。
+    </div>
+
+    <div class="field">
+        <label>结构化抽取（ChatClient.entity）</label>
+        <textarea id="extractInput">我叫王庆贺，今年 24 岁，在深圳找工作</textarea>
+        <button class="ghost" onclick="doExtract()">抽取姓名与年龄</button>
+        <div id="extractResult" class="card" style="display:none"></div>
+    </div>
+
+    <div class="nav"><a href="/index.html">← 回到知识库问答</a></div>
+</aside>
+
+<main>
+    <header>
+        <div class="title">Java 面试官（多轮追问）</div>
+        <div class="status"><span class="dot"></span><span id="sessionLabel"></span></div>
+    </header>
+
+    <div id="chat">
+        <div class="msg bot">
+            <div class="bubble">我是面试官。你说一个你最近的项目，我从 Spring Boot、MySQL、Redis 里挑一个开始追问。</div>
+            <div class="who">assistant</div>
+        </div>
+    </div>
+
+    <footer>
+        <textarea id="question" placeholder="回答面试官的问题，Enter 发送，Shift+Enter 换行"></textarea>
+        <button id="sendBtn" onclick="send()">发送</button>
+    </footer>
+</main>
+
+<script>
+    const $ = id => document.getElementById(id);
+    let session = '';
+
+    function newSession() {
+        session = 'sess-' + Date.now();
+        $('uid').value = session;
+        $('sessionLabel').textContent = session;
+        $('chat').innerHTML = '';
+        addBot('新会话已开始，之前的上下文不会再带进来。');
+    }
+
+    $('uid').addEventListener('change', () => {
+        session = $('uid').value.trim() || 'sess-default';
+        $('sessionLabel').textContent = session;
+    });
+
+    function addUser(text) {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg user';
+        const b = document.createElement('div');
+        b.className = 'bubble';
+        b.textContent = text;
+        wrap.appendChild(b);
+        $('chat').appendChild(wrap);
+        scrollBottom();
+    }
+
+    function addBot(text) {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg bot';
+        const b = document.createElement('div');
+        b.className = 'bubble';
+        b.textContent = text;
+        const who = document.createElement('div');
+        who.className = 'who';
+        who.textContent = 'assistant';
+        wrap.appendChild(b);
+        wrap.appendChild(who);
+        $('chat').appendChild(wrap);
+        scrollBottom();
+        return b;
+    }
+
+    function scrollBottom() {
+        $('chat').scrollTop = $('chat').scrollHeight;
+    }
+
+    async function send() {
+        const text = $('question').value.trim();
+        if (!text) return;
+
+        addUser(text);
+        $('question').value = '';
+        const btn = $('sendBtn');
+        btn.disabled = true;
+
+        const bubble = addBot('');
+        let answer = '';
+
+        try {
+            const url = '/chat?message=' + encodeURIComponent(text) + '&userId=' + encodeURIComponent(session);
+            const resp = await fetch(url, { headers: { 'Accept': 'text/event-stream' } });
+            if (!resp.ok || !resp.body) {
+                throw new Error('HTTP ' + resp.status);
+            }
+
+            // 不用 EventSource：它在流正常结束后会自动重连，导致重复提问
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                const blocks = buffer.split('\n\n');
+                buffer = blocks.pop();
+
+                for (const block of blocks) {
+                    for (const line of block.split('\n')) {
+                        if (!line.startsWith('data:')) continue;
+                        let chunk = line.slice(5);
+                        if (chunk.startsWith(' ')) chunk = chunk.slice(1);
+                        chunk = chunk.replace(/\\n/g, '\n');
+                        answer += chunk;
+                        bubble.textContent = answer;
+                        scrollBottom();
+                    }
+                }
+            }
+
+            if (!answer) {
+                bubble.textContent = '（服务端没有返回内容）';
+            }
+        } catch (err) {
+            bubble.textContent = '请求失败：' + err.message;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function doExtract() {
+        const text = $('extractInput').value.trim();
+        if (!text) return;
+        const box = $('extractResult');
+        box.style.display = 'block';
+        box.textContent = '抽取中...';
+
+        try {
+            const resp = await fetch('/extract?message=' + encodeURIComponent(text));
+            const contentType = resp.headers.get('content-type') || '';
+
+            if (contentType.includes('application/json')) {
+                const data = await resp.json();
+                box.innerHTML = '';
+                const rows = [
+                    ['name', data.name === undefined ? '（未返回）' : data.name],
+                    ['age', data.age === undefined ? '（未返回）' : data.age]
+                ];
+                rows.forEach(([k, v]) => {
+                    const line = document.createElement('div');
+                    line.innerHTML = '<b>' + k + '</b>：';
+                    line.appendChild(document.createTextNode(String(v)));
+                    box.appendChild(line);
+                });
+            } else {
+                box.textContent = await resp.text();
+            }
+        } catch (err) {
+            box.textContent = '抽取失败：' + err.message;
+        }
+    }
+
+    $('question').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            send();
+        }
+    });
+
+    newSession();
+</script>
+</body>
+</html>
