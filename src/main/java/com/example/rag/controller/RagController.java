@@ -258,8 +258,8 @@ public class RagController {
         result.put("question", q);
         result.put("rewritten", rewritten);
         result.put("recall", Map.of(
-                "vector", recall.vectorParents().size(),
-                "keyword", recall.keywordParents().size(),
+                "vector", recall.vectorCount(),
+                "keyword", recall.keywordCount(),
                 "topScore", Math.round(recall.topScore() * 100) / 100.0));
 
         // 两轮都不够可信：直接拒答，不调生成模型。
@@ -270,7 +270,7 @@ public class RagController {
             return result;
         }
 
-        List<String> fusedParentIds = rrfFuse(recall.vectorParents(), recall.keywordParents());
+        List<String> fusedParentIds = recall.fusedIds();
 
         // 按融合后的顺序取父块内容
         Map<String, ParentBlock> blockMap = parentBlockMapper.selectList(
@@ -338,49 +338,89 @@ public class RagController {
     }
 
     /**
-     * 一轮召回的结果：两路的父块 id 列表，以及向量路的最高相似度。
+     * 一轮召回的结果。
+     *
+     * @param fusedIds     跨列表 RRF 融合后的父块 id（已按分数排序）
+     * @param vectorCount  向量路命中的父块数
+     * @param keywordCount 关键词路命中的父块数
+     * @param topScore     向量路最高相似度（只统计真实存在的父块）
      */
-    private record Recall(List<String> vectorParents, List<String> keywordParents, double topScore) {
+    private record Recall(List<String> fusedIds, int vectorCount, int keywordCount, double topScore) {
     }
 
     /**
-     * 对一批查询做两路召回，结果按首次出现顺序合并。
-     * 改写出来的多个查询会一起参与，命中同一父块则自然被多个查询"投票"。
+     * 对一批查询做召回，并用 RRF 融合。
+     *
+     * <p>关键点：**每个查询的每条召回路径各自是一个有序列表**，分别参与 RRF，
+     * 而不是把所有结果按查询顺序首尾相接。后者会毁掉名次——原问题的第 8 名
+     * 会排到改写查询的第 1 名之前，而 RRF 只看名次不看原始分数。</p>
      */
     private Recall recall(List<String> queries, String userId, String kbId) {
-        LinkedHashSet<String> vectorParents = new LinkedHashSet<>();
-        LinkedHashSet<String> keywordParents = new LinkedHashSet<>();
+        List<List<String>> rankedLists = new ArrayList<>();
         Map<String, Double> scoreByParent = new HashMap<>();
+        Set<String> vectorParents = new LinkedHashSet<>();
+        Set<String> keywordParents = new LinkedHashSet<>();
 
         for (String query : queries) {
+            // 向量路：同一查询内按 parent 去重，保持相似度顺序
+            List<String> vectorList = new ArrayList<>();
             for (Document hit : vectorSearch(query, userId, kbId)) {
                 Object parentId = hit.getMetadata().get("parent_id");
                 if (parentId == null) {
                     continue;
                 }
                 String pid = parentId.toString();
-                vectorParents.add(pid);
+                if (vectorList.contains(pid)) {
+                    continue;
+                }
+                vectorList.add(pid);
                 if (hit.getScore() != null) {
                     scoreByParent.merge(pid, hit.getScore(), Math::max);
                 }
             }
-            keywordParents.addAll(keywordSearch(query, userId, kbId));
+            if (!vectorList.isEmpty()) {
+                rankedLists.add(vectorList);
+                vectorParents.addAll(vectorList);
+            }
+
+            List<String> keywordList = keywordSearch(query, userId, kbId);
+            if (!keywordList.isEmpty()) {
+                rankedLists.add(keywordList);
+                keywordParents.addAll(keywordList);
+            }
         }
 
         // 向量库里可能残留"父块已被删除/被重传替换"的孤儿向量。
         // 不过滤的话，它们会占满 top-N，表现为"明明召回了 20 多条，却一个父块都取不到"。
         Set<String> alive = existingParentIds(vectorParents, keywordParents, userId, kbId);
-        vectorParents.removeIf(id -> !alive.contains(id));
-        keywordParents.removeIf(id -> !alive.contains(id));
+        vectorParents.retainAll(alive);
+        keywordParents.retainAll(alive);
 
-        // 相似度也只统计"真实存在"的父块，避免孤儿向量把置信度抬上去
         double topScore = scoreByParent.entrySet().stream()
                 .filter(e -> alive.contains(e.getKey()))
                 .mapToDouble(Map.Entry::getValue)
                 .max()
                 .orElse(0.0);
 
-        return new Recall(new ArrayList<>(vectorParents), new ArrayList<>(keywordParents), topScore);
+        // 跨列表 RRF：同一父块被多个查询命中时，分数自然累加
+        Map<String, Double> fused = new HashMap<>();
+        for (List<String> list : rankedLists) {
+            int rank = 0;
+            for (String pid : list) {
+                if (!alive.contains(pid)) {
+                    continue;
+                }
+                rank++;
+                fused.merge(pid, 1.0 / (RRF_K + rank), Double::sum);
+            }
+        }
+        List<String> fusedIds = fused.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(FUSED_TOP_N)
+                .map(Map.Entry::getKey)
+                .toList();
+
+        return new Recall(fusedIds, vectorParents.size(), keywordParents.size(), topScore);
     }
 
     /**
@@ -410,7 +450,7 @@ public class RagController {
      * 才算"资料能回答这个问题"。</p>
      */
     private boolean isConfident(Recall recall) {
-        return !recall.keywordParents().isEmpty() || recall.topScore() >= confidentScore;
+        return recall.keywordCount() > 0 || recall.topScore() >= confidentScore;
     }
 
     /**
@@ -450,25 +490,6 @@ public class RagController {
             log.warn("关键词召回失败（可能是全文索引未创建），本轮降级为纯向量召回：{}", e.getMessage());
             return List.of();
         }
-    }
-
-    /**
-     * Reciprocal Rank Fusion：score = Σ 1 / (k + rank)，rank 从 1 开始。
-     * 两路的分数不可直接比较，但名次可以，所以用名次而不是原始分数来融合。
-     */
-    private List<String> rrfFuse(List<String> vectorParents, List<String> keywordParents) {
-        Map<String, Double> score = new HashMap<>();
-        for (int i = 0; i < vectorParents.size(); i++) {
-            score.merge(vectorParents.get(i), 1.0 / (RRF_K + i + 1), Double::sum);
-        }
-        for (int i = 0; i < keywordParents.size(); i++) {
-            score.merge(keywordParents.get(i), 1.0 / (RRF_K + i + 1), Double::sum);
-        }
-        return score.entrySet().stream()
-                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
-                .limit(FUSED_TOP_N)
-                .map(Map.Entry::getKey)
-                .toList();
     }
 
     /**
