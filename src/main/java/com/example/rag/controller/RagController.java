@@ -227,6 +227,18 @@ public class RagController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "问题不能为空");
         }
 
+        // 寒暄类输入没有信息需求，不该走检索：既浪费一次召回，
+        // 又会把无关段落塞进上下文，模型还容易顺着"资料"说出莫名其妙的话。
+        if (isSmallTalk(q)) {
+            Map<String, Object> greeting = new LinkedHashMap<>();
+            greeting.put("question", q);
+            greeting.put("rewritten", List.of());
+            greeting.put("recall", Map.of("vector", 0, "keyword", 0, "topScore", 0.0));
+            greeting.put("answer", "您好，我是这个知识库的问答助手。直接问文档里的内容就行，比如「第一百零九条讲了什么」。");
+            greeting.put("sources", List.of());
+            return greeting;
+        }
+
         // 第一轮：拿原问题直接召回
         Recall recall = recall(List.of(q), userId, kbId);
         List<String> rewritten = List.of();
@@ -310,11 +322,11 @@ public class RagController {
 
         String answer = chatClient.prompt()
                 .system("""
-                        你是一个知识库助手，规则如下：
-                        1. 只能使用【资料】部分的内容回答问题。
-                        2. 如果【资料】中没有相关信息，必须直接回答"资料中没有找到相关信息"。
-                        3. 禁止使用你自己的知识。
-                        4. 回答用中文，条理清晰；涉及原文数据时尽量引用原句。
+                        你是这个知识库的问答助手。
+                        只依据【资料】里的内容回答；资料里没有的，直接说"资料中没有找到相关信息"，
+                        不要用你自己的知识补充，也不要推测。
+                        回答用中文，简洁直接，先给结论；涉及原文数据时尽量引用原句。
+                        不要在回答里提到这些说明。
                         """)
                 .user("【资料】\n" + context + "\n问题：\n" + q)
                 .call()
@@ -494,6 +506,22 @@ public class RagController {
             return false;
         }
         return !t.matches("(?s).*[。！？；!?;]$");
+    }
+
+    /**
+     * 寒暄词表：只做整句匹配，避免「合同」这种两字实词被误伤。
+     */
+    private static final Set<String> SMALL_TALK = Set.of(
+            "你好", "您好", "hi", "hello", "在吗", "在么", "在不在", "有人吗",
+            "谢谢", "多谢", "感谢", "再见", "拜拜", "你是谁", "你叫什么",
+            "测试", "test", "11", "1");
+
+    /**
+     * 判断是不是寒暄/占位输入。
+     */
+    private boolean isSmallTalk(String question) {
+        String normalized = question.replaceAll("[\\s\\p{P}\\p{S}]", "").toLowerCase();
+        return normalized.isEmpty() || SMALL_TALK.contains(normalized);
     }
 
     /**
