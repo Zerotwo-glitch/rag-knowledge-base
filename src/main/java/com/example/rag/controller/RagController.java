@@ -306,6 +306,7 @@ public class RagController {
         StringBuilder context = new StringBuilder();
         List<Map<String, Object>> sources = new ArrayList<>();
         Set<String> usedParentIds = new HashSet<>(fusedParentIds);
+        String focusKeyword = toKeyword(q);
 
         for (String parentId : fusedParentIds) {
             ParentBlock block = blockMap.get(parentId);
@@ -327,6 +328,7 @@ public class RagController {
             if (context.length() + text.length() > MAX_CONTEXT_CHARS && !sources.isEmpty()) {
                 break;
             }
+            text = focus(text, focusKeyword);
             context.append(text).append("\n\n---\n\n");
 
             Map<String, Object> source = new LinkedHashMap<>();
@@ -650,6 +652,27 @@ public class RagController {
                 .eq(ParentBlock::getSource, block.getSource())
                 .eq(ParentBlock::getChunkIndex, block.getChunkIndex() + 1)
                 .last("limit 1"));
+    }
+
+    /**
+     * 命中条文时只截取命中位置附近的一段。
+     *
+     * <p>父块有 1600 字左右，里面通常并排放着好几条。整块丢给模型，
+     * 小模型容易抓不住重点，反而回答"资料里没有"。实测同一段内容，
+     * 截取后能答对，整块会答"没找到"。</p>
+     */
+    private String focus(String text, String keyword) {
+        if (keyword == null || keyword.length() < 3
+                || !keyword.startsWith("第") || !keyword.endsWith("条")) {
+            return text;
+        }
+        int pos = text.indexOf(keyword);
+        if (pos < 0) {
+            return text;
+        }
+        int start = Math.max(0, pos - 120);
+        int end = Math.min(text.length(), pos + 800);
+        return (start > 0 ? "…" : "") + text.substring(start, end) + (end < text.length() ? "…" : "");
     }
 
     private String preview(String content) {
