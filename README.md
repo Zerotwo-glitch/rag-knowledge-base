@@ -222,6 +222,8 @@ mvnw.cmd spring-boot:run
 ## 已知限制
 
 - **未做 rerank**：融合后直接取 topN，加一层交叉编码器精排效果会更好；
+- **向量库可能残留孤儿向量**：父块被删除或重传替换后，旧向量未必同步清掉。查询时已按 `parent_id` 回 MySQL 校验并剔除，不会影响答案，但会拖慢检索。彻底清一次可以用：
+  `docker exec rag-redis redis-cli EVAL "local ks=redis.call('keys','rag:*'); for i=1,#ks do redis.call('del',ks[i]) end; return #ks" 0`
 - **未做 query 改写**：多轮口语化提问（「那这个呢」）召回效果一般；
 - **删除跨两个存储**：MySQL 能随事务回滚，Redis 不能，所以顺序是「先删向量、再删表」，没有分布式事务；
 - **无鉴权**：`userId` 是查询参数，仅适合本地演示；

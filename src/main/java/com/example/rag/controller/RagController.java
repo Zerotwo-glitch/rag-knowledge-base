@@ -338,21 +338,56 @@ public class RagController {
     private Recall recall(List<String> queries, String userId, String kbId) {
         LinkedHashSet<String> vectorParents = new LinkedHashSet<>();
         LinkedHashSet<String> keywordParents = new LinkedHashSet<>();
-        double topScore = 0.0;
+        Map<String, Double> scoreByParent = new HashMap<>();
 
         for (String query : queries) {
             for (Document hit : vectorSearch(query, userId, kbId)) {
-                if (hit.getScore() != null) {
-                    topScore = Math.max(topScore, hit.getScore());
-                }
                 Object parentId = hit.getMetadata().get("parent_id");
-                if (parentId != null) {
-                    vectorParents.add(parentId.toString());
+                if (parentId == null) {
+                    continue;
+                }
+                String pid = parentId.toString();
+                vectorParents.add(pid);
+                if (hit.getScore() != null) {
+                    scoreByParent.merge(pid, hit.getScore(), Math::max);
                 }
             }
             keywordParents.addAll(keywordSearch(query, userId, kbId));
         }
+
+        // 向量库里可能残留"父块已被删除/被重传替换"的孤儿向量。
+        // 不过滤的话，它们会占满 top-N，表现为"明明召回了 20 多条，却一个父块都取不到"。
+        Set<String> alive = existingParentIds(vectorParents, keywordParents, userId, kbId);
+        vectorParents.removeIf(id -> !alive.contains(id));
+        keywordParents.removeIf(id -> !alive.contains(id));
+
+        // 相似度也只统计"真实存在"的父块，避免孤儿向量把置信度抬上去
+        double topScore = scoreByParent.entrySet().stream()
+                .filter(e -> alive.contains(e.getKey()))
+                .mapToDouble(Map.Entry::getValue)
+                .max()
+                .orElse(0.0);
+
         return new Recall(new ArrayList<>(vectorParents), new ArrayList<>(keywordParents), topScore);
+    }
+
+    /**
+     * 查出这批 id 里真正还在 MySQL 的父块。
+     */
+    private Set<String> existingParentIds(Collection<String> a, Collection<String> b, String userId, String kbId) {
+        Set<String> candidates = new LinkedHashSet<>(a);
+        candidates.addAll(b);
+        if (candidates.isEmpty()) {
+            return Set.of();
+        }
+        return parentBlockMapper.selectList(new LambdaQueryWrapper<ParentBlock>()
+                        .select(ParentBlock::getParentId)
+                        .in(ParentBlock::getParentId, candidates)
+                        .eq(ParentBlock::getKbId, kbId)
+                        .eq(ParentBlock::getUserId, userId))
+                .stream()
+                .map(ParentBlock::getParentId)
+                .collect(Collectors.toSet());
     }
 
     /**
