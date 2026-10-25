@@ -146,7 +146,16 @@ public class RagController {
                     .withMinChunkSizeChars(CHILD_MIN_CHUNK_CHARS)
                     .build();
 
-            List<Document> parentChunks = parentSplitter.apply(cleanedPages);
+            // PDF 是按页返回 Document 的，切分器不会跨文档合并。
+            // 直接切分的话每个父块只有一页（几百字），父子分块就退化成了"页块"。
+            // 所以先把全文拼成一份再切，父块才真的是 2000 token 级别。
+            String fullText = cleanedPages.stream()
+                    .map(Document::getText)
+                    .collect(Collectors.joining("\n"));
+            Document merged = new Document(fullText);
+            merged.getMetadata().put("source", fileName);
+
+            List<Document> parentChunks = parentSplitter.apply(List.of(merged));
 
             // 同名文件重复上传时，先清掉上一次的父块与向量，避免检索出重复内容
             parentBlockMapper.delete(new LambdaQueryWrapper<ParentBlock>()
@@ -231,20 +240,34 @@ public class RagController {
 
         StringBuilder context = new StringBuilder();
         List<Map<String, Object>> sources = new ArrayList<>();
+        Set<String> usedParentIds = new HashSet<>(fusedParentIds);
+
         for (String parentId : fusedParentIds) {
             ParentBlock block = blockMap.get(parentId);
             if (block == null || block.getContent() == null) {
                 continue;
             }
-            if (context.length() + block.getContent().length() > MAX_CONTEXT_CHARS) {
+
+            // 条文可能正好被切在两个父块之间：命中块里只有开头，续接块里才是后半段。
+            // 所以命中后把「同来源的下一个父块」一并带上，避免答案只看到半条。
+            String text = block.getContent();
+            if (looksTruncated(text)) {
+                ParentBlock next = findNextBlock(block, userId, kbId);
+                if (next != null && next.getContent() != null && !usedParentIds.contains(next.getParentId())) {
+                    text = text + "\n" + next.getContent();
+                    usedParentIds.add(next.getParentId());
+                }
+            }
+
+            if (context.length() + text.length() > MAX_CONTEXT_CHARS && !sources.isEmpty()) {
                 break;
             }
-            context.append(block.getContent()).append("\n\n---\n\n");
+            context.append(text).append("\n\n---\n\n");
 
             Map<String, Object> source = new LinkedHashMap<>();
             source.put("parentId", parentId);
             source.put("file", block.getSource());
-            source.put("preview", preview(block.getContent()));
+            source.put("preview", preview(text));
             sources.add(source);
         }
 
@@ -366,6 +389,33 @@ public class RagController {
         // 只保留汉字、字母、数字，其余（标点、布尔运算符）一律去掉
         s = s.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "").trim();
         return s.length() > 24 ? s.substring(0, 24) : s;
+    }
+
+    /**
+     * 块尾不是句末标点，基本可以判定这段被切断了（页码「－104－」同理）。
+     * 只有判断为被切断时才去接下一个父块，避免无脑扩容把上下文预算吃光。
+     */
+    private boolean looksTruncated(String text) {
+        String t = text == null ? "" : text.strip();
+        if (t.isEmpty()) {
+            return false;
+        }
+        return !t.matches("(?s).*[。！？；!?;]$");
+    }
+
+    /**
+     * 取同来源、序号 +1 的父块，也就是原文里紧接在后面的那一段。
+     */
+    private ParentBlock findNextBlock(ParentBlock block, String userId, String kbId) {
+        if (block.getChunkIndex() == null) {
+            return null;
+        }
+        return parentBlockMapper.selectOne(new LambdaQueryWrapper<ParentBlock>()
+                .eq(ParentBlock::getUserId, userId)
+                .eq(ParentBlock::getKbId, kbId)
+                .eq(ParentBlock::getSource, block.getSource())
+                .eq(ParentBlock::getChunkIndex, block.getChunkIndex() + 1)
+                .last("limit 1"));
     }
 
     private String preview(String content) {
