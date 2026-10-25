@@ -3,6 +3,7 @@ package com.example.rag.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.rag.entity.ParentBlock;
 import com.example.rag.mapper.ParentBlockMapper;
+import com.example.rag.service.QueryRewriteService;
 import com.example.rag.service.VectorIndexService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +13,7 @@ import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpStatus;
@@ -66,15 +68,31 @@ public class RagController {
     private final ChatClient chatClient;
     private final ParentBlockMapper parentBlockMapper;
     private final VectorIndexService vectorIndexService;
+    private final QueryRewriteService queryRewriteService;
+
+    /** 向量召回的最低相似度 */
+    private final double vectorThreshold;
+    /** 认为"资料能回答这个问题"的最低相似度 */
+    private final double confidentScore;
+    /** 是否允许低置信时触发查询改写 */
+    private final boolean rewriteEnabled;
 
     public RagController(VectorStore vectorStore,
                          ChatClient.Builder builder,
                          ParentBlockMapper parentBlockMapper,
-                         VectorIndexService vectorIndexService) {
+                         VectorIndexService vectorIndexService,
+                         QueryRewriteService queryRewriteService,
+                         @Value("${app.rag.vector-threshold:0.6}") double vectorThreshold,
+                         @Value("${app.rag.confident-score:0.72}") double confidentScore,
+                         @Value("${app.rag.rewrite-enabled:true}") boolean rewriteEnabled) {
         this.vectorStore = vectorStore;
         this.chatClient = builder.build();
         this.parentBlockMapper = parentBlockMapper;
         this.vectorIndexService = vectorIndexService;
+        this.queryRewriteService = queryRewriteService;
+        this.vectorThreshold = vectorThreshold;
+        this.confidentScore = confidentScore;
+        this.rewriteEnabled = rewriteEnabled;
     }
 
     // ==================== 写入 ====================
@@ -209,25 +227,38 @@ public class RagController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "问题不能为空");
         }
 
-        // 路 1：向量召回（子块 → 父块）
-        List<String> vectorParents = recallByVector(q, userId, kbId);
+        // 第一轮：拿原问题直接召回
+        Recall recall = recall(List.of(q), userId, kbId);
+        List<String> rewritten = List.of();
 
-        // 路 2：关键词召回（父块全文索引）
-        List<String> keywordParents = recallByKeyword(q, userId, kbId);
+        // 置信度不够，才用查询改写再试一轮（多花一次模型调用，只在必要时触发）
+        if (!isConfident(recall) && rewriteEnabled) {
+            rewritten = queryRewriteService.rewrite(q, userId, kbId);
+            if (!rewritten.isEmpty()) {
+                List<String> queries = new ArrayList<>();
+                queries.add(q);
+                queries.addAll(rewritten);
+                recall = recall(queries, userId, kbId);
+            }
+        }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("question", q);
+        result.put("rewritten", rewritten);
         result.put("recall", Map.of(
-                "vector", vectorParents.size(),
-                "keyword", keywordParents.size()));
+                "vector", recall.vectorParents().size(),
+                "keyword", recall.keywordParents().size(),
+                "topScore", Math.round(recall.topScore() * 100) / 100.0));
 
-        if (vectorParents.isEmpty() && keywordParents.isEmpty()) {
-            result.put("answer", "抱歉，知识库里没有找到与这个问题相关的内容。");
+        // 两轮都不够可信：直接拒答，不调生成模型。
+        // 否则模型会拿不相关的资料硬凑答案，这比"没查到"危险得多。
+        if (!isConfident(recall)) {
+            result.put("answer", "资料中没有找到相关信息。");
             result.put("sources", List.of());
             return result;
         }
 
-        List<String> fusedParentIds = rrfFuse(vectorParents, keywordParents);
+        List<String> fusedParentIds = rrfFuse(recall.vectorParents(), recall.keywordParents());
 
         // 按融合后的顺序取父块内容
         Map<String, ParentBlock> blockMap = parentBlockMapper.selectList(
@@ -295,54 +326,81 @@ public class RagController {
     }
 
     /**
-     * 向量召回：子块命中后按 parent_id 去重，保持相似度排序。
+     * 一轮召回的结果：两路的父块 id 列表，以及向量路的最高相似度。
      */
-    private List<String> recallByVector(String question, String userId, String kbId) {
-        try {
-            List<Document> hits = vectorStore.similaritySearch(SearchRequest.builder()
-                    .query(question)
-                    .topK(VECTOR_TOP_K)
-                    .similarityThreshold(0.6)
-                    .filterExpression("user_id == '" + safe(userId) + "' && kb_id == '" + safe(kbId) + "'")
-                    .build());
+    private record Recall(List<String> vectorParents, List<String> keywordParents, double topScore) {
+    }
 
-            if (hits == null) {
-                return List.of();
-            }
-            LinkedHashSet<String> parents = new LinkedHashSet<>();
-            for (Document hit : hits) {
+    /**
+     * 对一批查询做两路召回，结果按首次出现顺序合并。
+     * 改写出来的多个查询会一起参与，命中同一父块则自然被多个查询"投票"。
+     */
+    private Recall recall(List<String> queries, String userId, String kbId) {
+        LinkedHashSet<String> vectorParents = new LinkedHashSet<>();
+        LinkedHashSet<String> keywordParents = new LinkedHashSet<>();
+        double topScore = 0.0;
+
+        for (String query : queries) {
+            for (Document hit : vectorSearch(query, userId, kbId)) {
+                if (hit.getScore() != null) {
+                    topScore = Math.max(topScore, hit.getScore());
+                }
                 Object parentId = hit.getMetadata().get("parent_id");
                 if (parentId != null) {
-                    parents.add(parentId.toString());
+                    vectorParents.add(parentId.toString());
                 }
             }
-            return new ArrayList<>(parents);
+            keywordParents.addAll(keywordSearch(query, userId, kbId));
+        }
+        return new Recall(new ArrayList<>(vectorParents), new ArrayList<>(keywordParents), topScore);
+    }
+
+    /**
+     * 置信度判断。
+     *
+     * <p>不能只看"有没有返回结果"——向量检索几乎永远会返回 topK 条，
+     * 哪怕全是无关内容。所以要么精确关键词命中，要么向量最高相似度过线，
+     * 才算"资料能回答这个问题"。</p>
+     */
+    private boolean isConfident(Recall recall) {
+        return !recall.keywordParents().isEmpty() || recall.topScore() >= confidentScore;
+    }
+
+    /**
+     * 向量召回：子块命中后返回原始 Document（需要读取 similarity 分数）。
+     */
+    private List<Document> vectorSearch(String query, String userId, String kbId) {
+        try {
+            List<Document> hits = vectorStore.similaritySearch(SearchRequest.builder()
+                    .query(query)
+                    .topK(VECTOR_TOP_K)
+                    .similarityThreshold(vectorThreshold)
+                    .filterExpression("user_id == '" + safe(userId) + "' && kb_id == '" + safe(kbId) + "'")
+                    .build());
+            return hits == null ? List.of() : hits;
         } catch (Exception e) {
-            log.warn("向量召回失败，本轮只使用关键词召回", e);
+            log.warn("向量召回失败，本轮只使用关键词召回：{}", e.getMessage());
             return List.of();
         }
     }
 
     /**
-     * 关键词召回：命中 MySQL 全文索引。
+     * 关键词召回：只保留「核心词精确命中」这一条路。
      *
-     * <p>先用「去掉疑问词后的核心词」做精确匹配（ngram 下效果最好），
-     * 没命中再退回整句自然语言检索。索引不存在或分词不可用时，
-     * 这一路整体降级为空，不影响向量召回。</p>
+     * <p>早先加过整句自然语言模式的兜底，但那个模式无论相关性多低都会返回 topK 条，
+     * 而 RRF 只看名次不看分数，噪声会直接把融合结果带偏。所以要召回精度，
+     * 要覆盖率就交给上面的查询改写。</p>
      */
-    private List<String> recallByKeyword(String question, String userId, String kbId) {
+    private List<String> keywordSearch(String query, String userId, String kbId) {
+        String keyword = toKeyword(query);
+        if (keyword.isBlank()) {
+            return List.of();
+        }
         try {
-            String keyword = toKeyword(question);
-            if (!keyword.isBlank()) {
-                List<String> exact = parentBlockMapper.searchByKeyword(userId, kbId, keyword, KEYWORD_TOP_K);
-                if (exact != null && !exact.isEmpty()) {
-                    return exact;
-                }
-            }
-            List<String> fuzzy = parentBlockMapper.searchByQuestionNatural(userId, kbId, question, KEYWORD_TOP_K);
-            return fuzzy == null ? List.of() : fuzzy;
+            List<String> parents = parentBlockMapper.searchByKeyword(userId, kbId, keyword, KEYWORD_TOP_K);
+            return parents == null ? List.of() : parents;
         } catch (Exception e) {
-            log.warn("关键词召回失败（可能是全文索引未创建），本轮降级为纯向量召回", e);
+            log.warn("关键词召回失败（可能是全文索引未创建），本轮降级为纯向量召回：{}", e.getMessage());
             return List.of();
         }
     }

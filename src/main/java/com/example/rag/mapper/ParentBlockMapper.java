@@ -32,25 +32,4 @@ public interface ParentBlockMapper extends BaseMapper<ParentBlock> {
                                  @Param("kbId") String kbId,
                                  @Param("keyword") String keyword,
                                  @Param("limit") int limit);
-
-    /**
-     * 关键词召回的兜底路径：整句走自然语言模式。
-     *
-     * <p>BOOLEAN 模式下 ngram 会要求一个词的所有 2-gram 都命中，
-     * 问句里一旦带上「的内容是什么」这类口语成分，相邻 2-gram 在原文中不存在，
-     * 整句就会返回 0 行。此时退化成自然语言模式，靠相关度排序兜底。</p>
-     */
-    @Select("""
-            SELECT parent_id
-            FROM rag_parent_block
-            WHERE user_id = #{userId}
-              AND kb_id = #{kbId}
-              AND MATCH(content) AGAINST(#{question} IN NATURAL LANGUAGE MODE)
-            ORDER BY MATCH(content) AGAINST(#{question} IN NATURAL LANGUAGE MODE) DESC
-            LIMIT #{limit}
-            """)
-    List<String> searchByQuestionNatural(@Param("userId") String userId,
-                                         @Param("kbId") String kbId,
-                                         @Param("question") String question,
-                                         @Param("limit") int limit);
 }

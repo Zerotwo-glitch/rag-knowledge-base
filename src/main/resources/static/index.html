@@ -449,8 +449,17 @@
             meta.className = 'meta';
             meta.innerHTML = '<span class="tag">向量召回 ' + data.recall.vector + ' 条</span>' +
                              '<span class="tag">关键词召回 ' + data.recall.keyword + ' 条</span>' +
+                             '<span class="tag">最高相似度 ' + (data.recall.topScore || 0) + '</span>' +
                              '<span class="tag">融合后使用 ' + (data.sources || []).length + ' 个父块</span>';
             wrap.appendChild(meta);
+
+            if (data.rewritten && data.rewritten.length) {
+                const rw = document.createElement('div');
+                rw.className = 'meta';
+                rw.innerHTML = '<span class="tag">查询改写 → ' +
+                    data.rewritten.map(escapeHtml).join(' · ') + '</span>';
+                wrap.appendChild(rw);
+            }
         }
 
         if (data && data.sources && data.sources.length) {

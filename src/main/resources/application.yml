@@ -1,13 +1,18 @@
 server:
   port: ${SERVER_PORT:8080}
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
 
 spring:
+  application:
+    name: rag-knowledge-base
+
+  # 向量库由 VectorStoreConfig 手动构建，关掉自动配置避免出现两个 VectorStore Bean
   autoconfigure:
     exclude:
       - org.springframework.ai.vectorstore.redis.autoconfigure.RedisVectorStoreAutoConfiguration
-      -
-  application:
-    name: rag-knowledge-base
 
   # 自动加载项目根目录的 .env（KEY=VALUE 格式），文件不存在也不影响启动
   config:
@@ -28,9 +33,6 @@ spring:
     multipart:
       max-file-size: ${MAX_FILE_SIZE:20MB}
       max-request-size: ${MAX_REQUEST_SIZE:20MB}
-    encoding:
-      charset: UTF-8
-      force: true
 
   ai:
     ollama:
@@ -53,3 +55,12 @@ mybatis-plus:
 logging:
   level:
     com.example.rag: INFO
+
+app:
+  rag:
+    # 向量召回的最低相似度，低于它的子块直接丢弃
+    vector-threshold: ${RAG_VECTOR_THRESHOLD:0.6}
+    # 认为"资料能回答这个问题"的最低相似度；达不到且关键词也没命中，就触发查询改写
+    confident-score: ${RAG_CONFIDENT_SCORE:0.72}
+    # 低置信时是否启用查询改写
+    rewrite-enabled: ${RAG_REWRITE_ENABLED:true}
