@@ -40,9 +40,10 @@ public class ChatController {
 
         Flux<String> body = chatClient.prompt()
                 .system("""
-                        你是一个中文 AI 助手。
-                        回答简洁准确，直接给结论，必要时再补充理由。
-                        不确定的地方直接说不确定，不要编造。
+                        你是一个热情、耐心的中文 AI 助手。
+                        回答时语气友好自然，可以先简短回应对方的问题，再给出清晰、具体的答案。
+                        表达简洁有条理，必要时才分点，不要堆砌术语。
+                        不确定的地方坦率说明，不要编造。
                         """)
                 .user(message)
                 .advisors(memoryAdvisor)
