@@ -56,10 +56,27 @@ public class RagController {
     private static final int FUSED_TOP_N = 4;
     /** RRF 平滑系数，经典取值 60 */
     private static final int RRF_K = 60;
+    /**
+     * 关键词路的权重。
+     *
+     * <p>关键词是"精确命中"，比向量的"语义接近"更可信，所以给它加权；
+     * 不加权时它和向量第一名同为 1/(60+1)，同分排序取决于哈希顺序，
+     * 结果就是精确命中的条文时灵时不灵。</p>
+     */
+    private static final double KEYWORD_WEIGHT = 1.5;
+    /**
+     * 超过这个长度就不再做精确关键词匹配。
+     *
+     * <p>ngram 的 BOOLEAN 模式要求检索词的所有 2-gram 都命中，一长串口语
+     * （「我在网上买了个手机快递显示已经签收」）在原文档里几乎不可能原样出现，
+     * 命中率接近 0，白白多打一次数据库。这类问题交给查询改写去覆盖。</p>
+     */
+    private static final int MAX_KEYWORD_LENGTH = 12;
     /** 拼进 Prompt 的最大字符数，避免超出模型上下文 */
-    private static final int MAX_CONTEXT_CHARS = 6000;
+    private static final int MAX_CONTEXT_CHARS = 8000;
 
-    private static final int PARENT_CHUNK_SIZE = 2000;    private static final int PARENT_MIN_CHUNK_CHARS = 1500;
+    private static final int PARENT_CHUNK_SIZE = 2000;
+    private static final int PARENT_MIN_CHUNK_CHARS = 1500;
     private static final int CHILD_CHUNK_SIZE = 500;
     private static final int CHILD_MIN_CHUNK_CHARS = 300;
 
@@ -359,7 +376,8 @@ public class RagController {
      * 会排到改写查询的第 1 名之前，而 RRF 只看名次不看原始分数。</p>
      */
     private Recall recall(List<String> queries, String userId, String kbId) {
-        List<List<String>> rankedLists = new ArrayList<>();
+        List<List<String>> vectorLists = new ArrayList<>();
+        List<List<String>> keywordLists = new ArrayList<>();
         Map<String, Double> scoreByParent = new HashMap<>();
         Set<String> vectorParents = new LinkedHashSet<>();
         Set<String> keywordParents = new LinkedHashSet<>();
@@ -382,13 +400,13 @@ public class RagController {
                 }
             }
             if (!vectorList.isEmpty()) {
-                rankedLists.add(vectorList);
+                vectorLists.add(vectorList);
                 vectorParents.addAll(vectorList);
             }
 
             List<String> keywordList = keywordSearch(query, userId, kbId);
             if (!keywordList.isEmpty()) {
-                rankedLists.add(keywordList);
+                keywordLists.add(keywordList);
                 keywordParents.addAll(keywordList);
             }
         }
@@ -405,17 +423,14 @@ public class RagController {
                 .max()
                 .orElse(0.0);
 
-        // 跨列表 RRF：同一父块被多个查询命中时，分数自然累加
+        // 跨列表 RRF：同一父块被多个查询命中时，分数自然累加。
+        // 关键词路加权——精确命中应当压过"语义接近"的向量命中。
         Map<String, Double> fused = new HashMap<>();
-        for (List<String> list : rankedLists) {
-            int rank = 0;
-            for (String pid : list) {
-                if (!alive.contains(pid)) {
-                    continue;
-                }
-                rank++;
-                fused.merge(pid, 1.0 / (RRF_K + rank), Double::sum);
-            }
+        for (List<String> list : vectorLists) {
+            accumulate(fused, list, alive, 1.0);
+        }
+        for (List<String> list : keywordLists) {
+            accumulate(fused, list, alive, KEYWORD_WEIGHT);
         }
         List<String> fusedIds = fused.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
@@ -424,6 +439,20 @@ public class RagController {
                 .toList();
 
         return new Recall(fusedIds, vectorParents.size(), keywordParents.size(), topScore);
+    }
+
+    /**
+     * 把一个有序列表按 RRF 累加进融合分数（可加权）。
+     */
+    private void accumulate(Map<String, Double> fused, List<String> list, Set<String> alive, double weight) {
+        int rank = 0;
+        for (String pid : list) {
+            if (!alive.contains(pid)) {
+                continue;
+            }
+            rank++;
+            fused.merge(pid, weight / (RRF_K + rank), Double::sum);
+        }
     }
 
     /**
@@ -483,7 +512,7 @@ public class RagController {
      */
     private List<String> keywordSearch(String query, String userId, String kbId) {
         String keyword = toKeyword(query);
-        if (keyword.isBlank()) {
+        if (keyword.isBlank() || keyword.length() > MAX_KEYWORD_LENGTH) {
             return List.of();
         }
         try {
