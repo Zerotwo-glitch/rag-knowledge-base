@@ -59,10 +59,13 @@ public class RagController {
     /** 拼进 Prompt 的最大字符数，避免超出模型上下文 */
     private static final int MAX_CONTEXT_CHARS = 6000;
 
-    private static final int PARENT_CHUNK_SIZE = 2000;
-    private static final int PARENT_MIN_CHUNK_CHARS = 1500;
+    private static final int PARENT_CHUNK_SIZE = 2000;    private static final int PARENT_MIN_CHUNK_CHARS = 1500;
     private static final int CHILD_CHUNK_SIZE = 500;
     private static final int CHILD_MIN_CHUNK_CHARS = 300;
+
+    /** 统一的不命中话术：说明边界，并把文档外的问题引导到对话页 */
+    private static final String NOT_FOUND =
+            "资料中没有找到相关信息。知识库只回答文档里的内容，其他问题可以到「多轮对话」页提问。";
 
     private final VectorStore vectorStore;
     private final ChatClient chatClient;
@@ -265,7 +268,7 @@ public class RagController {
         // 两轮都不够可信：直接拒答，不调生成模型。
         // 否则模型会拿不相关的资料硬凑答案，这比"没查到"危险得多。
         if (!isConfident(recall)) {
-            result.put("answer", "资料中没有找到相关信息。");
+            result.put("answer", NOT_FOUND);
             result.put("sources", List.of());
             return result;
         }
@@ -315,7 +318,7 @@ public class RagController {
         }
 
         if (context.isEmpty()) {
-            result.put("answer", "抱歉，知识库里没有找到与这个问题相关的内容。");
+            result.put("answer", NOT_FOUND);
             result.put("sources", List.of());
             return result;
         }
