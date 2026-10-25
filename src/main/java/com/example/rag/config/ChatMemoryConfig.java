@@ -1,4 +1,4 @@
-﻿package com.example.rag.config;
+package com.example.rag.config;
 
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;

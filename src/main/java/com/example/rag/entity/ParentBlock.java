@@ -1,4 +1,4 @@
-﻿package com.example.rag.entity;
+package com.example.rag.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;

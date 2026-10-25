@@ -1,4 +1,4 @@
-﻿package com.example.rag.entity;
+package com.example.rag.entity;
 
 public class User {
     private Integer age;

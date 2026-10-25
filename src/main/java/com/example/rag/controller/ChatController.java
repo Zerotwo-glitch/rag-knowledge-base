@@ -1,4 +1,4 @@
-﻿package com.example.rag.controller;
+package com.example.rag.controller;
 
 import com.example.rag.entity.User;
 import org.springframework.ai.chat.client.ChatClient;

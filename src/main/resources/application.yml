@@ -1,9 +1,5 @@
 server:
   port: ${SERVER_PORT:8080}
-  servlet:
-    encoding:
-      charset: UTF-8
-      force: true
 
 spring:
   application:
@@ -28,6 +24,9 @@ spring:
     multipart:
       max-file-size: ${MAX_FILE_SIZE:20MB}
       max-request-size: ${MAX_REQUEST_SIZE:20MB}
+    encoding:
+      charset: UTF-8
+      force: true
 
   ai:
     ollama:
