@@ -349,6 +349,7 @@ public class RagController {
                         你是这个知识库的问答助手。
                         只依据【资料】里的内容回答；资料里没有的，直接说"资料中没有找到相关信息"，
                         不要用你自己的知识补充，也不要推测。
+                        资料可能包含多段内容，注意定位到与问题对应的那一段，不要只看开头。
                         回答用中文，简洁直接，先给结论；涉及原文数据时尽量引用原句。
                         不要在回答里提到这些说明。
                         """)
@@ -658,8 +659,10 @@ public class RagController {
      * 命中条文时只截取命中位置附近的一段。
      *
      * <p>父块有 1600 字左右，里面通常并排放着好几条。整块丢给模型，
-     * 小模型容易抓不住重点，反而回答"资料里没有"。实测同一段内容，
-     * 截取后能答对，整块会答"没找到"。</p>
+     * 小模型容易抓不住重点，反而回答"资料里没有"。</p>
+     *
+     * <p>片段要**从条文本身开始**，不能往前带太多上一条的内容——实测开头
+     * 如果是上一条的结尾，模型会把注意力放在那儿，然后说"没找到"。</p>
      */
     private String focus(String text, String keyword) {
         if (keyword == null || keyword.length() < 3
@@ -670,8 +673,8 @@ public class RagController {
         if (pos < 0) {
             return text;
         }
-        int start = Math.max(0, pos - 120);
-        int end = Math.min(text.length(), pos + 800);
+        int start = Math.max(0, pos - 20);
+        int end = Math.min(text.length(), pos + 900);
         return (start > 0 ? "…" : "") + text.substring(start, end) + (end < text.length() ? "…" : "");
     }
 
