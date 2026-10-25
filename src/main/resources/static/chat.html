@@ -91,18 +91,6 @@
             text-decoration: none;
         }
 
-        .card {
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px 12px;
-            font-size: 12px;
-            line-height: 1.7;
-            background: #fafbfc;
-            white-space: pre-wrap;
-        }
-
-        .card b { color: var(--muted); font-weight: 500; }
-
         main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
         header {
@@ -173,7 +161,7 @@
 
 <aside>
     <h1>多轮对话</h1>
-    <div class="sub">ChatMemory 记忆 · 流式输出 · 结构化抽取</div>
+    <div class="sub">流式输出 · 会话记忆</div>
 
     <div class="field">
         <label>会话 ID（服务端按它区分记忆）</label>
@@ -186,31 +174,24 @@
         按会话 ID 隔离。刷新页面不会清空记忆，点「开始新会话」才会换一个新的 ID。
     </div>
 
-    <div class="field">
-        <label>结构化抽取（ChatClient.entity）</label>
-        <textarea id="extractInput">我叫王庆贺，今年 24 岁，在深圳找工作</textarea>
-        <button class="ghost" onclick="doExtract()">抽取姓名与年龄</button>
-        <div id="extractResult" class="card" style="display:none"></div>
-    </div>
-
     <div class="nav"><a href="/index.html">← 回到知识库问答</a></div>
 </aside>
 
 <main>
     <header>
-        <div class="title">Java 面试官（多轮追问）</div>
+        <div class="title">AI 助手（流式对话）</div>
         <div class="status"><span class="dot"></span><span id="sessionLabel"></span></div>
     </header>
 
     <div id="chat">
         <div class="msg bot">
-            <div class="bubble">我是面试官。你说一个你最近的项目，我从 Spring Boot、MySQL、Redis 里挑一个开始追问。</div>
+            <div class="bubble">你好，我是这个演示里的对话助手。有什么想问的？</div>
             <div class="who">assistant</div>
         </div>
     </div>
 
     <footer>
-        <textarea id="question" placeholder="回答面试官的问题，Enter 发送，Shift+Enter 换行"></textarea>
+        <textarea id="question" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
         <button id="sendBtn" onclick="send()">发送</button>
     </footer>
 </main>
@@ -315,38 +296,6 @@
             bubble.textContent = '请求失败：' + err.message;
         } finally {
             btn.disabled = false;
-        }
-    }
-
-    async function doExtract() {
-        const text = $('extractInput').value.trim();
-        if (!text) return;
-        const box = $('extractResult');
-        box.style.display = 'block';
-        box.textContent = '抽取中...';
-
-        try {
-            const resp = await fetch('/extract?message=' + encodeURIComponent(text));
-            const contentType = resp.headers.get('content-type') || '';
-
-            if (contentType.includes('application/json')) {
-                const data = await resp.json();
-                box.innerHTML = '';
-                const rows = [
-                    ['name', data.name === undefined ? '（未返回）' : data.name],
-                    ['age', data.age === undefined ? '（未返回）' : data.age]
-                ];
-                rows.forEach(([k, v]) => {
-                    const line = document.createElement('div');
-                    line.innerHTML = '<b>' + k + '</b>：';
-                    line.appendChild(document.createTextNode(String(v)));
-                    box.appendChild(line);
-                });
-            } else {
-                box.textContent = await resp.text();
-            }
-        } catch (err) {
-            box.textContent = '抽取失败：' + err.message;
         }
     }
 

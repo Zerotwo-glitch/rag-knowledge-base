@@ -109,6 +109,7 @@ flowchart LR
 - 手动录入文本（不传文件也能建库）
 - 多知识库隔离：检索时按 `user_id` + `kb_id` 过滤
 - 单页对话前端：建库、传文件、提问、查看引用片段
+- 另附一个多轮对话页（`/chat.html`）：SSE 流式输出 + `MessageWindowChatMemory` 会话隔离
 - 同路失败自动降级：关键词索引没建好时，退回纯向量召回，不影响可用性
 
 ## 技术栈
@@ -243,7 +244,9 @@ rag-knowledge-base
 │   └── service         # VectorIndexService：按条件批量删向量
 ├── src/main/resources
 │   ├── application.yml
-│   └── static/index.html
+│   ├── static
+│   │   ├── index.html                    # 知识库问答
+│   │   └── chat.html                     # 多轮对话
 ├── docs/schema.sql
 ├── docker-compose.yml
 └── .env.example
