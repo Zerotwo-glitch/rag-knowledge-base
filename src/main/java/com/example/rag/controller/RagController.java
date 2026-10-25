@@ -28,6 +28,8 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -540,23 +542,37 @@ public class RagController {
      * 核心词越短，ngram 的 2-gram 组合越可能全部命中，精确度越高。</p>
      */
     private String toKeyword(String question) {
+        // 条文引用是最常见的一类问法，直接抽出来，别让「内容」「是什么」这些尾巴参与匹配。
+        // 多一个「内容」就会多出「条内」这个 2-gram，而原文里没有，整句直接 0 命中。
+        String compact = question.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+
+        Matcher arabic = ARTICLE_REF.matcher(compact);
+        if (arabic.find()) {
+            return "第" + toChineseNumber(Integer.parseInt(arabic.group(1))) + "条";
+        }
+        Matcher chinese = ARTICLE_REF_CN.matcher(compact);
+        if (chinese.find()) {
+            return "第" + chinese.group(1) + "条";
+        }
+
         String s = question;
         for (String noise : QUESTION_NOISE) {
             s = s.replace(noise, "");
         }
         // 只保留汉字、字母、数字，其余（标点、布尔运算符）一律去掉
         s = s.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "").trim();
-        // 「第520条」→「第五百二十条」：文档里是中文数字，用户习惯打阿拉伯数字
-        s = ARTICLE_REF.matcher(s)
-                .replaceAll(m -> "第" + toChineseNumber(Integer.parseInt(m.group(1))) + "条");
         return s.length() > 24 ? s.substring(0, 24) : s;
     }
 
     /**
-     * 匹配「第123条」这样的条文引用。
+     * 匹配「第123条」这样的阿拉伯数字条文引用。
      */
-    private static final java.util.regex.Pattern ARTICLE_REF =
-            java.util.regex.Pattern.compile("第(\\d{1,4})条");
+    private static final Pattern ARTICLE_REF = Pattern.compile("第\\s*(\\d{1,4})\\s*条");
+
+    /**
+     * 匹配「第一百零九条」这样的中文数字条文引用。
+     */
+    private static final Pattern ARTICLE_REF_CN = Pattern.compile("第([零一二三四五六七八九十百千两]{1,8})条");
 
     private static final String[] DIGITS = {"零", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
 
