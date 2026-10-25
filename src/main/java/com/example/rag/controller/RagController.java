@@ -302,16 +302,22 @@ public class RagController {
 
     /**
      * 关键词召回：命中 MySQL 全文索引。
-     * 索引不存在或分词不可用时降级为"这一路不返回"，不影响整体可用性。
+     *
+     * <p>先用「去掉疑问词后的核心词」做精确匹配（ngram 下效果最好），
+     * 没命中再退回整句自然语言检索。索引不存在或分词不可用时，
+     * 这一路整体降级为空，不影响向量召回。</p>
      */
     private List<String> recallByKeyword(String question, String userId, String kbId) {
-        String keyword = toBooleanQuery(question);
-        if (keyword.isBlank()) {
-            return List.of();
-        }
         try {
-            List<String> parents = parentBlockMapper.searchByKeyword(userId, kbId, keyword, KEYWORD_TOP_K);
-            return parents == null ? List.of() : parents;
+            String keyword = toKeyword(question);
+            if (!keyword.isBlank()) {
+                List<String> exact = parentBlockMapper.searchByKeyword(userId, kbId, keyword, KEYWORD_TOP_K);
+                if (exact != null && !exact.isEmpty()) {
+                    return exact;
+                }
+            }
+            List<String> fuzzy = parentBlockMapper.searchByQuestionNatural(userId, kbId, question, KEYWORD_TOP_K);
+            return fuzzy == null ? List.of() : fuzzy;
         } catch (Exception e) {
             log.warn("关键词召回失败（可能是全文索引未创建），本轮降级为纯向量召回", e);
             return List.of();
@@ -338,16 +344,28 @@ public class RagController {
     }
 
     /**
-     * 把自然语言问题转成 MySQL 布尔查询串：去掉运算符，按空格切词。
-     * 全文索引使用 ngram 分词（见 docs/schema.sql），中文不需要额外的分词器。
+     * 问句里不影响检索的口语成分。按长度从长到短排列，避免先删短词把长词拆坏。
      */
-    private String toBooleanQuery(String question) {
-        String cleaned = question.replaceAll("[+\\-<>()~*\"@]", " ").trim();
-        String[] terms = cleaned.split("\\s+");
-        return Arrays.stream(terms)
-                .filter(t -> !t.isBlank())
-                .limit(8)
-                .collect(Collectors.joining(" "));
+    private static final List<String> QUESTION_NOISE = List.of(
+            "的内容是什么", "的内容是", "内容是什么", "的内容", "是什么样", "是什么", "是多少",
+            "什么意思", "讲什么", "说了什么", "怎么规定", "如何规定", "规定是什么", "有哪些内容",
+            "有哪些", "请问", "我想知道", "告诉我", "能不能", "可不可以", "什么时候", "怎么",
+            "如何", "为什么", "哪些", "吗", "呢", "呀", "啊");
+
+    /**
+     * 把问句压成检索词。
+     *
+     * <p>例：「第一百零九条的内容是什么」→「第一百零九条」。
+     * 核心词越短，ngram 的 2-gram 组合越可能全部命中，精确度越高。</p>
+     */
+    private String toKeyword(String question) {
+        String s = question;
+        for (String noise : QUESTION_NOISE) {
+            s = s.replace(noise, "");
+        }
+        // 只保留汉字、字母、数字，其余（标点、布尔运算符）一律去掉
+        s = s.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "").trim();
+        return s.length() > 24 ? s.substring(0, 24) : s;
     }
 
     private String preview(String content) {
